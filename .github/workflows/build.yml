@@ -2,40 +2,52 @@ name: Build Windows
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
-
-permissions:
-  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
+
+      - name: Trouver le projet
+        run: |
+          $spec = Get-ChildItem -Path . -Recurse -Filter mue.spec -File | Select-Object -First 1
+          if (-not $spec) {
+            Get-ChildItem -Recurse -Depth 2 | Select-Object -ExpandProperty FullName
+            throw "mue.spec introuvable : les fichiers du projet ne sont pas dans le depot."
+          }
+          "PROJ=$($spec.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Projet trouve dans : $($spec.DirectoryName)"
+          Get-ChildItem $spec.DirectoryName | Select-Object -ExpandProperty Name
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Dépendances
+      - name: Dependances
+        working-directory: ${{ env.PROJ }}
         run: python -m pip install -r requirements.txt pyinstaller
 
       - name: FFmpeg
+        working-directory: ${{ env.PROJ }}
         run: python tools/prepare_ffmpeg.py
 
       - name: PyInstaller
+        working-directory: ${{ env.PROJ }}
         run: pyinstaller --noconfirm --clean mue.spec
 
-      - name: Test de fumée
-        shell: pwsh
+      - name: Test de fumee
+        working-directory: ${{ env.PROJ }}
         run: |
           $p = Start-Process dist\Mue\Mue.exe -ArgumentList "--install" -PassThru
           $null = $p.Handle
           $p.WaitForExit()
           $log = "$env:APPDATA\Mue\crash.log"
           if (Test-Path $log) { Get-Content $log }
-          if ($p.ExitCode -ne 0) { throw "Mue --install a échoué (code $($p.ExitCode))" }
+          if ($p.ExitCode -ne 0) { throw "Mue --install a echoue (code $($p.ExitCode))" }
           $base = "HKCU:\Software\Classes\SystemFileAssociations"
           foreach ($ext in ".jpg", ".heic", ".cr2", ".mp4", ".flac", ".pdf", ".svg", ".csv") {
             if (Test-Path "$base\$ext\shell\Mue.ConvertTo") { Write-Host "OK  $ext" }
@@ -44,27 +56,32 @@ jobs:
           Start-Process dist\Mue\Mue.exe -ArgumentList "--uninstall" -Wait
 
       - name: Installeur (Inno Setup)
-        shell: pwsh
+        working-directory: ${{ env.PROJ }}
         run: |
-          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
-          if (-not $iscc) {
-            choco install innosetup -y --no-progress
-            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          }
-          & $iscc /Q installer.iss
+          choco upgrade innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $t = Get-Content installer.iss -Raw -Encoding utf8
+          [IO.File]::WriteAllText("$PWD\installer.iss", $t, [Text.UTF8Encoding]::new($true))
+          & $iscc installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup a echoue" }
 
-      - name: Version portable
-        shell: pwsh
-        run: Compress-Archive -Path dist\Mue\* -DestinationPath dist\Mue-portable.zip
+      - name: Rassembler les fichiers
+        working-directory: ${{ env.PROJ }}
+        run: |
+          $out = "$env:GITHUB_WORKSPACE\out"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item dist\Mue-Setup-*.exe $out
+          Compress-Archive -Path dist\Mue\* -DestinationPath "$out\Mue-portable.zip"
+          Get-ChildItem $out | ForEach-Object { "{0}  {1:N0} Mo" -f $_.Name, ($_.Length / 1MB) }
 
       - name: Envoi de l'installeur
         uses: actions/upload-artifact@v4
         with:
           name: Mue-Setup
-          path: dist/Mue-Setup-*.exe
+          path: out/Mue-Setup-*.exe
 
       - name: Envoi de la version portable
         uses: actions/upload-artifact@v4
         with:
           name: Mue-portable
-          path: dist/Mue-portable.zip
+          path: out/Mue-portable.zip
