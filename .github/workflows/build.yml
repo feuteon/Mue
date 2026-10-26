@@ -31,6 +31,20 @@ jobs:
         working-directory: ${{ env.PROJ }}
         run: python -m pip install -r requirements.txt pyinstaller
 
+      - name: Runtime Visual C++ a jour pour PyQt5
+        working-directory: ${{ env.PROJ }}
+        run: |
+          $qt = python -c "import os, PyQt5; print(os.path.join(os.path.dirname(PyQt5.__file__), 'Qt5', 'bin'))"
+          foreach ($n in "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll") {
+            $src = Join-Path $env:WINDIR "System32\$n"
+            $dst = Join-Path $qt $n
+            if ((Test-Path $src) -and (Test-Path $dst)) {
+              Copy-Item $src $dst -Force
+              Write-Host "$n -> $((Get-Item $dst).VersionInfo.FileVersion)"
+            }
+          }
+          python -c "import PyQt5.QtWidgets, pymupdf, rawpy, pillow_heif; d = pymupdf.open(); d.new_page(); print('Imports OK, PyMuPDF', pymupdf.VersionBind)"
+
       - name: FFmpeg
         working-directory: ${{ env.PROJ }}
         run: python tools/prepare_ffmpeg.py
