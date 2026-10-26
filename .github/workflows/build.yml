@@ -1,0 +1,70 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dépendances
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: FFmpeg
+        run: python tools/prepare_ffmpeg.py
+
+      - name: PyInstaller
+        run: pyinstaller --noconfirm --clean mue.spec
+
+      - name: Test de fumée
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\Mue\Mue.exe -ArgumentList "--install" -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          $log = "$env:APPDATA\Mue\crash.log"
+          if (Test-Path $log) { Get-Content $log }
+          if ($p.ExitCode -ne 0) { throw "Mue --install a échoué (code $($p.ExitCode))" }
+          $base = "HKCU:\Software\Classes\SystemFileAssociations"
+          foreach ($ext in ".jpg", ".heic", ".cr2", ".mp4", ".flac", ".pdf", ".svg", ".csv") {
+            if (Test-Path "$base\$ext\shell\Mue.ConvertTo") { Write-Host "OK  $ext" }
+            else { throw "Menu absent pour $ext" }
+          }
+          Start-Process dist\Mue\Mue.exe -ArgumentList "--uninstall" -Wait
+
+      - name: Installeur (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc /Q installer.iss
+
+      - name: Version portable
+        shell: pwsh
+        run: Compress-Archive -Path dist\Mue\* -DestinationPath dist\Mue-portable.zip
+
+      - name: Envoi de l'installeur
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mue-Setup
+          path: dist/Mue-Setup-*.exe
+
+      - name: Envoi de la version portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mue-portable
+          path: dist/Mue-portable.zip
